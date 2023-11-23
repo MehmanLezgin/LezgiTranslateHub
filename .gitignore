@@ -1,0 +1,6 @@
+server/node_modules
+client/node_modules
+server/.env
+server/*.sql
+server/*.txt
+server/tr_p.js
