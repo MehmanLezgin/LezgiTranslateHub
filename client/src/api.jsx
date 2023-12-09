@@ -1,7 +1,8 @@
 import axios from 'axios';
+import { Navigate } from 'react-router-dom';
 
 const axiosInstance = axios.create({
-    baseURL: 'http://192.168.0.105:3001/api/', // Set your API base URL
+    baseURL: '/api/', // Set your API base URL
     timeout: 5000, // Set a timeout
 });
 
@@ -24,8 +25,9 @@ axiosInstance.interceptors.request.use(
 axiosInstance.interceptors.response.use(
     (response) => response,
     (error) => {
-        if (error.response.status === 401) {
-            window.location = '/auth/login';
+        const status = error.response.status;
+        if (status == 401 || status == 403) {
+            window.location = '/auth';
         }else return Promise.reject(error);
     }
 );

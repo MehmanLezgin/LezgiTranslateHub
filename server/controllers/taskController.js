@@ -1,11 +1,11 @@
 const db = require('../db');
 const settings = require('../settings');
 
-const TASK_TYPE_TRANSLATE = 'translate';
-const TASK_TYPE_RATE_AND_SUGGEST = 'rate_and_suggest';
-const TASK_TYPE_SELECT_TRANSLATION = 'select_translation';
+const utils = require('../utils');
 
-const SERVER_ERROR_MSG = { msg: 'Server Error' };
+const TASK_TYPE_TRANSLATE_RATE_SUGGEST = 'translate_rate_suggest';
+const TASK_TYPE_SELECT_TRANSLATION = 'select_translation';
+// const TASK_TYPE_RATE_AND_SUGGEST = 'rate_and_suggest';
 
 async function getUserTranslationsCount(user_id) {
     const query = 'SELECT COUNT(*) AS tr_count FROM translations WHERE user_id = $1'
@@ -20,7 +20,7 @@ async function getUserExistingSuggestionsIds(user_id) {
     return existingSuggestionsIds;
 }
 
-async function getRateAndSuggestTask(user_id, text_id = -1) {
+/*async function getRateAndSuggestTask(user_id, text_id = -1) {
     const textQuery = text_id == -1 ?
         `SELECT id, text\
     FROM texts\
@@ -29,18 +29,22 @@ async function getRateAndSuggestTask(user_id, text_id = -1) {
         FROM translations\
         WHERE translations.text_id = texts.id\
         AND translations.user_id != ${user_id}\
-    ) ORDER BY RANDOM() LIMIT 1;` :
+    ) ORDER BY RANDOM() LIMIT 1` :
         `SELECT id, text FROM texts WHERE id=${text_id}`;
 
     const textResult = await db.query(textQuery);
-    if (!textResult.rows.length) return null;
+    if (!textResult.rowCount) return null;
     if (text_id == -1) text_id = textResult.rows[0].id;
 
     const translationsQuery =
         'SELECT t.id, t.text, u.username, t.is_dialect, t.rating, t.rates_count\
     FROM translations t JOIN users u ON t.user_id = u.id\
-    WHERE t.text_id = $1 ORDER BY t.id';
-    const trnsResult = await db.query(translationsQuery, [text_id]);
+    WHERE t.text_id = $1 AND (t.rating < $2 OR t.rates_count < $3) \
+    ORDER BY t.id';
+    const trnsResult = await db.query(translationsQuery,
+        [text_id, settings.MIN_CORRECT_TR_RATING, settings.MIN_CORRECT_TR_RATES_COUNT]);
+
+    if (!trnsResult.rowCount) return null;
 
     const task = {
         type: TASK_TYPE_RATE_AND_SUGGEST,
@@ -58,22 +62,32 @@ async function getRateAndSuggestTask(user_id, text_id = -1) {
             id: row.id,
             text: row.text,
             translator_username: row.username,
-            rating: roundNum(row.rating, 10),
+            rating: utils.roundNum(row.rating, 10),
             rates_count: row.rates_count,
             can_suggest: !existingSuggestionsIds.includes(row.id)
         };
 
+        if (row.is_dialect) tr.is_dialect = true;
+
         task.translations.push(tr);
     }
     return task;
-}
+}*/
 
-async function getTranslateTask(text_id = -1) {
+async function getTranslateTask(user_id, text_id = -1, isNewTextRequired = false) {
     let textQuery;
     let queryParams = [];
 
     if (text_id == -1) {
-        textQuery = 'SELECT * FROM texts WHERE id NOT IN (SELECT text_id FROM translations) ORDER BY RANDOM() LIMIT 1';
+        textQuery = Math.random() < 0.7 ?
+            'SELECT * FROM texts WHERE id NOT IN (SELECT text_id FROM translations) ORDER BY RANDOM() LIMIT 1'
+            : `SELECT t.*\
+            FROM texts t\
+            LEFT JOIN translations tr ON t.id = tr.text_id\
+            GROUP BY t.id\
+            ${isNewTextRequired ? 'HAVING COUNT(tr.text_id) = 0' : 'HAVING COUNT(tr.text_id) = 3'}\
+            ORDER BY RANDOM()\
+            LIMIT 1`;
     } else {
         textQuery = 'SELECT * FROM texts WHERE id = $1';
         queryParams[0] = text_id;
@@ -81,7 +95,68 @@ async function getTranslateTask(text_id = -1) {
 
     const textResult = await db.query(textQuery, queryParams);
 
-    if (!textResult.rows.length) return null;
+    if (!textResult.rowCount) return null;
+
+    const taskId = textResult.rows[0].id;
+    const translationsQuery = 'SELECT t.id, t.text, t.user_id, \
+        u.username, t.is_dialect, t.rating, t.rates_count \
+        FROM translations t \
+        LEFT JOIN users u ON t.user_id = u.id \
+        WHERE t.text_id = $1 ORDER BY t.id';
+    const translationsResult = await db.query(translationsQuery, [taskId]);
+
+    const task = {
+        type: TASK_TYPE_TRANSLATE_RATE_SUGGEST,
+        original_text: textResult.rows[0].text,
+        id: taskId,
+        translations: []
+    };
+
+    const existingSuggestionsIds = await getUserExistingSuggestionsIds(user_id);
+
+    translationsResult.rows.forEach((row) => {
+        const translation = {
+            id: row.id,
+            text: row.text,
+            translator_username: row.username,
+            rating: utils.roundNum(row.rating, 10),
+            rates_count: row.rates_count,
+            can_suggest: row.user_id !== user_id && !existingSuggestionsIds.includes(row.id),
+            can_rate: row.user_id !== user_id &&
+                (row.rating < settings.MIN_CORRECT_TR_RATING || row.rates_count < settings.MIN_CORRECT_TR_RATES_COUNT)
+        };
+
+        if (row.is_dialect) translation.is_dialect = true;
+
+        task.translations.push(translation);
+    });
+
+    return task;
+}
+
+
+/*async function getTranslateTask(text_id = -1, isNewTextRequired=false) {
+    let textQuery;
+    let queryParams = [];
+
+    if (text_id == -1) {
+        textQuery = Math.random() < 0.7 ?
+            'SELECT * FROM texts WHERE id NOT IN (SELECT text_id FROM translations) ORDER BY RANDOM() LIMIT 1'
+            : `SELECT t.*\
+            FROM texts t\
+            LEFT JOIN translations tr ON t.id = tr.text_id\
+            GROUP BY t.id\
+            HAVING COUNT(tr.text_id) ${isNewTextRequired ? '= 0' : '< 3'}\
+            ORDER BY RANDOM()\
+            LIMIT 1`
+    } else {
+        textQuery = 'SELECT * FROM texts WHERE id = $1';
+        queryParams[0] = text_id;
+    }
+
+    const textResult = await db.query(textQuery, queryParams);
+
+    if (!textResult.rowCount) return null;
 
     const taskId = textResult.rows[0].id;
     const translationsQuery = 'SELECT id, text FROM translations WHERE text_id = $1 ORDER BY id';
@@ -102,7 +177,7 @@ async function getTranslateTask(text_id = -1) {
         task.translations.push(translation);
     });
     return task;
-}
+}*/
 
 
 async function getSelectTranslationTask(user_id, suggestion_id = -1) {
@@ -111,7 +186,7 @@ async function getSelectTranslationTask(user_id, suggestion_id = -1) {
 
     if (suggestion_id == -1) {
         textQuery =
-        'SELECT suggestions.*, users.username AS username\
+            'SELECT suggestions.*, users.username AS username\
         FROM suggestions\
         INNER JOIN users ON suggestions.user_id = users.id\
         INNER JOIN translations ON suggestions.translation_id = translations.id\
@@ -119,12 +194,12 @@ async function getSelectTranslationTask(user_id, suggestion_id = -1) {
         AND translations.user_id != $1\
         ORDER BY RANDOM()\
         LIMIT 1'
-            // 'SELECT suggestions.*, users.username AS username\
-            // FROM suggestions\
-            // INNER JOIN users ON suggestions.user_id = users.id\
-            // WHERE suggestions.user_id != $1\
-            // ORDER BY RANDOM()\
-            // LIMIT 1';
+        // 'SELECT suggestions.*, users.username AS username\
+        // FROM suggestions\
+        // INNER JOIN users ON suggestions.user_id = users.id\
+        // WHERE suggestions.user_id != $1\
+        // ORDER BY RANDOM()\
+        // LIMIT 1';
         queryParams = [user_id];
     } else {
         textQuery =
@@ -162,7 +237,7 @@ async function getSelectTranslationTask(user_id, suggestion_id = -1) {
             text: row.text,
             translator_username: row.username,
             is_dialect: row.is_dialect,
-            rating: roundNum(row.rating, 10),
+            rating: utils.roundNum(row.rating, 10),
             rates_count: row.rates_count
         }
     };
@@ -187,6 +262,7 @@ async function getUserTaskInfo(user_id) {
 
 async function commitTranslation(res, text_id, user_id, translations, deletedTranslationsIds) {
     try {
+        if (translations.length == 0) return true;
         // deleting
         for (const id of deletedTranslationsIds) {
             if (id == text_id) continue;
@@ -206,10 +282,10 @@ async function commitTranslation(res, text_id, user_id, translations, deletedTra
             else
                 db.query(query2, [tr.text, user_id, tr.is_dialect ?? false, id]);
         }
-        
+
         return true;
     } catch (e) {
-        res.status(500).json(SERVER_ERROR_MSG);
+        res.status(500).json(req.msg.json.SERVER_ERROR);
         console.log(e);
     }
     return false;
@@ -217,6 +293,7 @@ async function commitTranslation(res, text_id, user_id, translations, deletedTra
 
 async function commitRateAndSuggest(res, user_id, translations) {
     try {
+        if (translations.length == 0) return true;
         const rateQuery = getRateQuery('translations');
 
         const sgAddQuesry =
@@ -230,10 +307,10 @@ async function commitRateAndSuggest(res, user_id, translations) {
             if (tr.suggestion)
                 db.query(sgAddQuesry, [tr.suggestion, user_id, id])
         }
-        
+
         return true;
     } catch (e) {
-        res.status(500).json(SERVER_ERROR_MSG);
+        res.status(500).json(req.msg.json.SERVER_ERROR);
         console.log(e);
     }
     return false;
@@ -253,58 +330,148 @@ async function commitTranslationSelection(res, translation_id, suggestion_id, se
 
         return true;
     } catch (e) {
-        res.status(500).json(SERVER_ERROR_MSG);
+        res.status(500).json(req.msg.json.SERVER_ERROR);
         console.log(e);
     }
     return false;
 }
 
-async function onUserCompleteTask(res, user_id, task_type) {
-    try {
-        const saveTaskQuery = 'UPDATE users SET current_task_info=null WHERE id=$1';
-        await db.query(saveTaskQuery, [user_id]);
-        return res.status(200).end();
-    }catch(e) {
-        return res.status(500).json(SERVER_ERROR_MSG);
+const calcExpRewardForTask = (user_id, task_type, tr_sg_count, text) => {
+    let reward = 0;
+    switch (task_type) {
+        case TASK_TYPE_TRANSLATE_RATE_SUGGEST:
+            reward = 3;
+            break;
+
+        // case TASK_TYPE_RATE_AND_SUGGEST:
+        //     reward = 1;
+        //     break;
+
+        case TASK_TYPE_SELECT_TRANSLATION:
+            reward = 1;
+            break;
     }
+    return reward
 }
 
-const roundNum = (num, d = 10) => Math.round(num * d) / d;
+async function onUserCompleteTask(res, user_id, task_type, tr_sg_count, text) {
+    const rewardExp = calcExpRewardForTask(user_id, task_type, tr_sg_count, text)
+    const saveTaskQuery = 'UPDATE users SET current_task_info=null, exp = exp + $1 WHERE id=$2 RETURNING exp, lvl';
+    const result = await db.query(saveTaskQuery, [rewardExp, user_id]);
+
+    let lvl_info = {
+        reward: {
+            count: rewardExp,
+            item: 'exp'
+        }
+    };
+
+    if (result.rowCount) {
+        const { exp, lvl } = result.rows[0];
+        lvl_info.exp = exp;
+        lvl_info.lvl = lvl;
+
+        const expToLvlUp = utils.calcExpForLevel(lvl);
+        if (exp >= expToLvlUp) {
+            const lvlUp = ~~(exp / expToLvlUp);
+            const newLvl = lvl + lvlUp;
+            const expRemainder = exp - expToLvlUp;
+
+            lvl_info.old_lvl = lvl;
+            lvl_info.lvl = newLvl;
+            lvl_info.old_exp = exp;
+            lvl_info.exp = expRemainder;
+            lvl_info.next_lvl_exp = utils.calcExpForLevel(newLvl)
+
+            const updateLevelQuery = 'UPDATE users SET lvl = $1, exp = $2 WHERE id = $3';
+            await db.query(updateLevelQuery, [newLvl, expRemainder, user_id]);
+        }
+    }
+
+    return res.status(200).json({ level_info: lvl_info });
+}
 
 const getRateQuery = (tableName) =>
     `UPDATE ${tableName} SET rating=((rating*rates_count+$1)/(rates_count+1)), rates_count=(rates_count+1) WHERE id=$2`
 
-const isTranslationsRequiredForTaskType = (task_type) =>
-    [TASK_TYPE_TRANSLATE, TASK_TYPE_RATE_AND_SUGGEST].includes(task_type);
+const isTranslationsRequiredForTaskType = (task_type) => task_type == TASK_TYPE_TRANSLATE_RATE_SUGGEST;
+// [TASK_TYPE_TRANSLATE_RATE_SUGGEST, TASK_TYPE_RATE_AND_SUGGEST].includes(task_type);
 
-const checkTranslationsBody = (translations, res, task_type) => {
+const checkTranslationsBody = (req, res, translations, task_type) => {
     if (!Array.isArray(translations))
-        return res.status(400).json({ msg: 'Invalid translations body' });
+        return res.status(400).json(req.msg.json.INVALID_TRANSLATIONS_BODY);
 
     const map = [];
     for (const tr of translations) {
         const id = tr.id;
         if (id != undefined && id >= 0 && map[id] == true)
-            return res.status(400).json({ msg: 'Duplicate translation ids' });
+            return res.status(400).json(req.msg.json.DUPLICATE_TRANSLATION_IDS);
 
         map[id] = true;
 
-        if (task_type == TASK_TYPE_TRANSLATE) {
+        /*if (task_type == TASK_TYPE_TRANSLATE_RATE_SUGGEST) {
             if (typeof tr.text != 'string' || (id != undefined && typeof id != 'number' && id >= 0)
                 || (tr.is_dialect != undefined && typeof tr.is_dialect != 'number' && typeof tr.is_dialect != 'boolean')
             ) {
-                return res.status(400).json({ msg: 'Invalid translations body' });
+                return res.status(400).json(req.msg.json.INVALID_TRANSLATIONS_BODY);
             }
         } else if (task_type == TASK_TYPE_RATE_AND_SUGGEST) {
             if ((tr.suggestion && typeof tr.suggestion != 'string') || (typeof id != 'number' && id >= 0) ||
                 tr.mark == undefined || typeof tr.mark != 'number' ||
                 tr.mark < settings.MIN_RATE_MARK || tr.mark > settings.MAX_RATE_MARK
             ) {
-                return res.status(400).json({ msg: 'Invalid translations body' });
+                return res.status(400).json(req.msg.json.INVALID_TRANSLATIONS_BODY);
             }
+        }*/
+        if (
+            typeof tr.text != 'string' ||
+
+            (id != undefined && (typeof id != 'number' || id < 0)) ||
+
+            (tr.is_dialect != undefined && typeof tr.is_dialect != 'boolean') ||
+
+            (tr.suggestion && typeof tr.suggestion != 'string') ||
+
+            tr.mark != undefined &&
+
+            (typeof tr.mark != 'number' ||
+
+                tr.mark < settings.MIN_RATE_MARK ||
+
+                tr.mark > settings.MAX_RATE_MARK)
+        ) {
+            return res.status(400).json(req.msg.json.INVALID_TRANSLATIONS_BODY);
         }
     }
     return false;
+}
+
+const splitTranslationsBodyByTaskType = (username, translations, originalTranslations) => {
+    const translationsNew = [];
+    const translationsRateSuggest = [];
+
+    console.log('originalTranslations', originalTranslations);
+
+    for (const tr of translations) {
+        const origTr = originalTranslations.find(tr2 => tr.id == tr2.id);
+
+        if (!origTr || origTr.translator_username == username)
+            translationsNew.push(tr);
+        else if (origTr && (tr.mark || tr.suggestion) && origTr.translator_username != username)
+            translationsRateSuggest.push(tr);
+        // if (origTr && (origTr.translator_username != username && (origTr.mark || origTr.suggestion))) {
+        //     translationsRateSuggest.push(tr);
+        //     continue;
+        // }
+        
+
+        // // if (!origTr) continue;
+        
+        // if (!origTr || origTr.translator_username == username)
+        //     translationsNew.push(tr);
+    }
+
+    return [translationsNew, translationsRateSuggest]
 }
 
 class TaskController {
@@ -325,13 +492,13 @@ class TaskController {
                             isLastTaskExpired = true;
                         } else {
                             switch (userTaskInfo.task_type) {
-                                case TASK_TYPE_TRANSLATE:
-                                    task = await getTranslateTask(userTaskInfo.text_id);
+                                case TASK_TYPE_TRANSLATE_RATE_SUGGEST:
+                                    task = await getTranslateTask(user_id, userTaskInfo.text_id);
                                     break;
 
-                                case TASK_TYPE_RATE_AND_SUGGEST:
-                                    task = await getRateAndSuggestTask(user_id, userTaskInfo.text_id);
-                                    break;
+                                // case TASK_TYPE_RATE_AND_SUGGEST:
+                                //     task = await getRateAndSuggestTask(user_id, userTaskInfo.text_id);
+                                //     break;
 
                                 case TASK_TYPE_SELECT_TRANSLATION:
                                     task = await getSelectTranslationTask(user_id, userTaskInfo.text_id);
@@ -339,8 +506,6 @@ class TaskController {
 
                             }
                             task.isRestored = true;
-                            // console.log(userTaskInfo);
-
                             return res.status(200).json(task);
                         }
                     }
@@ -349,12 +514,12 @@ class TaskController {
                 }
             }
 
-            const taskTypes = [TASK_TYPE_TRANSLATE, TASK_TYPE_RATE_AND_SUGGEST, TASK_TYPE_SELECT_TRANSLATION];
+            const taskTypes = [TASK_TYPE_TRANSLATE_RATE_SUGGEST, /*TASK_TYPE_RATE_AND_SUGGEST, */TASK_TYPE_SELECT_TRANSLATION];
             const taskTypesCount = taskTypes.length;
 
             const getRandTaskType = () => {
                 if (!taskTypes.length) return null;
-                const index = (taskTypes.length == taskTypesCount && Math.random() > 0.99) ? 0 : ~~(Math.random() * taskTypes.length);
+                const index = (taskTypes.length == taskTypesCount && Math.random() > 0.6) ? 0 : ~~(Math.random() * taskTypes.length);
                 let task_type = taskTypes[index];
                 taskTypes.splice(index, 1);
                 return task_type;
@@ -364,13 +529,13 @@ class TaskController {
             for (let i = 0; i < taskTypesCount; i++) {
                 task_type = getRandTaskType();
                 switch (task_type) {
-                    case TASK_TYPE_TRANSLATE:
-                        task = await getTranslateTask();
+                    case TASK_TYPE_TRANSLATE_RATE_SUGGEST:
+                        task = await getTranslateTask(user_id, -1, req.query.newtext == 1);
                         break;
 
-                    case TASK_TYPE_RATE_AND_SUGGEST:
-                        task = await getRateAndSuggestTask(user_id);
-                        break;
+                    // case TASK_TYPE_RATE_AND_SUGGEST:
+                    //     task = await getRateAndSuggestTask(user_id);
+                    //     break;
 
                     case TASK_TYPE_SELECT_TRANSLATION:
                         task = await getSelectTranslationTask(user_id);
@@ -381,7 +546,7 @@ class TaskController {
             }
 
             if (!task)
-                return res.status(404).json({ msg: 'No tasks available' });
+                return res.status(404).json(req.msg.json.NO_TASKS_AVAILABLE);
 
             if (isLastTaskExpired)
                 task.lastTaskExpired = isLastTaskExpired;
@@ -395,12 +560,10 @@ class TaskController {
             const userTaskInfoStr = JSON.stringify(userTaskInfo);
             const saveTaskQuery = 'UPDATE users SET current_task_info=$1 WHERE id=$2';
             await db.query(saveTaskQuery, [userTaskInfoStr, user_id]);
-            
-            console.log(userTaskInfo);
             res.status(200).json(task);
         } catch (e) {
             console.log(e);
-            res.status(500).json(SERVER_ERROR_MSG);
+            res.status(500).json(req.msg.json.SERVER_ERROR);
         }
     }
 
@@ -408,51 +571,50 @@ class TaskController {
         try {
             const user_id = req.user.id;
             let userTaskInfo;
+            let task;
 
             try {
                 userTaskInfo = JSON.parse(await getUserTaskInfo(user_id));
             } catch (e) {
                 console.log(e);
-                return res.status(400).json({ msg: 'You have no task yet 1' });
+                return res.status(400).json(req.msg.json.YOU_HAVE_NO_TASK_YET);
             }
 
             if (!userTaskInfo)
-                return res.status(400).json({ msg: 'You have no task yet 2' });
+                return res.status(400).json(req.msg.json.YOU_HAVE_NO_TASK_YET);
 
             const text_id = req.body.id;
-            // console.log(text_id, userTaskInfo.text_id);
 
-            // console.log(userTaskInfo);
             if (userTaskInfo.text_id != text_id)
-                return res.status(400).json({ msg: 'Wrong id' });
+                return res.status(400).json(req.msg.json.WRONG_ID);
 
             if (userTaskInfo.task_type != undefined && userTaskInfo.task_type != req.body.type)
-                return res.status(400).json({ msg: 'Wrong task type' });
+                return res.status(400).json(req.msg.json.WRONG_TASK_TYPE);
 
             const isTranslationsRequired = isTranslationsRequiredForTaskType(userTaskInfo.task_type);
 
             const translations = req.body.translations;
             if (isTranslationsRequired && (!Array.isArray(translations) || translations.length == 0))
-                return res.status(400).json({ msg: 'No translations provided' });
+                return res.status(400).json(req.msg.json.NO_TRANSLATIONS_PROVIDED);
 
 
             if (isTranslationsRequired && translations.length > settings.MAX_TEXT_TRANSLATIONS)
-                return res.status(400).json({ msg: 'Too many translations provided' });
+                return res.status(400).json(req.msg.json.TOO_MANY_TRANSLATIONS_PROVIDED);
 
-            if (isTranslationsRequired && checkTranslationsBody(translations, res, userTaskInfo.task_type))
+            if (isTranslationsRequired && checkTranslationsBody(req, res, translations, userTaskInfo.task_type))
                 return;
 
             let commitResult = null;
 
-            if (userTaskInfo.task_type == TASK_TYPE_TRANSLATE) {
-                const task = await getTranslateTask(text_id);
+            if (userTaskInfo.task_type == TASK_TYPE_TRANSLATE_RATE_SUGGEST) {
+                task = await getTranslateTask(user_id, text_id);
                 if (!task)
-                    return res.status(404).json({ msg: 'Invalid task' });
+                    return res.status(404).json(req.msg.json.INVALID_TASK);
 
                 let deletedTranslationsIds = [];
                 const current_translations = task.translations ?? [];
 
-                const current_translations_ids = current_translations.map(tr => tr.id);
+                const currentTranslationsIds = current_translations.map(tr => tr.id);
                 const new_translations_ids = translations.map(tr => tr.id);
 
                 if (current_translations.length != 0) {
@@ -463,50 +625,85 @@ class TaskController {
                         .filter(id => id != undefined && id >= 0 && !new_translations_ids.includes(id))
                 }
 
+                // console.log('deletedTranslationsIds', deletedTranslationsIds);
+                // const selfTranslationsIds = currentTranslationsIds.filter(tr => tr.translator_username != req.user.username);
+
+                // for (const tr of deletedTranslations) {
+                //     if (tr.translator_username != req.user.username)
+                //         return res.status(403).json(req.msg.json.YOU_CANNOT_DELETE_NOT_YOURS_TRANSLATION_WITH_ID(tr.id));
+                // }
+
+
                 for (const tr of translations) {
-                    if (tr.id == undefined || tr.id < 0) continue;
-                    if (!current_translations_ids.includes(tr.id))
-                        return res.status(404).json({ msg: `No translation with id = ${tr.id} found` });
+                    if (tr.id == undefined || tr.id < 0) {
+                        if (tr.mark != undefined || tr.suggestion != undefined)
+                            return res.status(404).json(req.msg.json.NO_TRANSLATION_ID_FOR_RATE);
+
+                        if (tr.suggestion != undefined)
+                            return res.status(404).json(req.msg.json.NO_TRANSLATION_ID_FOR_SUGGESTION);
+
+                        continue;
+                    }
+
+                    if (!currentTranslationsIds.includes(tr.id))
+                        return res.status(404).json(req.msg.json.NO_TRANSLATION_WITH_ID_FOUND(tr.id));
+
+                    const origTr = task.translations.find(tr2 => tr2.id == tr.id);
+
+                    if (!origTr.can_suggest && tr.suggestion != undefined)
+                        return res.status(403).json(req.msg.json.YOU_CANNOT_SUGGEST_TRANSLATION_WITH_ID(tr.id));
+
+                    if (!origTr.can_rate && tr.mark != undefined)
+                        return res.status(403).json(req.msg.json.YOU_CANNOT_RATE_TRANSLATION_WITH_ID(tr.id));
                 }
 
-                commitResult = commitTranslation(res, text_id, user_id, translations, deletedTranslationsIds);
-
-            } else if (userTaskInfo.task_type == TASK_TYPE_RATE_AND_SUGGEST) {
-                const task = await getRateAndSuggestTask(user_id, text_id);
+                
+                const trnsArr = splitTranslationsBodyByTaskType(req.user.username, translations, task.translations);
+                // console.log('trnsArr', trnsArr);
+                // console.log('deletedTranslationsIds', deletedTranslationsIds);
+                // return res.status(200).send('yes');
+                commitResult = commitTranslation(res, text_id, user_id, trnsArr[0], deletedTranslationsIds);
+                if (commitResult)
+                    commitResult = commitRateAndSuggest(res, user_id, trnsArr[1]);
+            }
+            /*else if (userTaskInfo.task_type == TASK_TYPE_RATE_AND_SUGGEST) {
+                task = await getRateAndSuggestTask(user_id, text_id);
                 if (!task)
-                    return res.status(404).json({ msg: 'Invalid task' });
+                    return res.status(404).json(req.msg.json.INVALID_TASK);
 
                 for (const tr of translations) {
                     if (!task.translations.some(tr2 => tr.id == tr2.id))
-                        return res.status(404).json({ msg: `No translation with id = ${tr.id} found` });
+                        return res.status(404).json(req.msg.json.NO_TRANSLATION_WITH_ID_FOUND(tr.id));
 
                     if (task.translations.some(tr2 => tr2.id == tr.id && tr.suggestion && !tr2.can_suggest))
-                        return res.status(404).json({ msg: `You can't suggest translation for id = ${tr.id}` });
+                        return res.status(404).json(req.msg.json.CANNOT_SUGGEST_TRANSLATION(tr.id));
                 }
 
                 commitResult = commitRateAndSuggest(res, user_id, translations);
 
-            } else if (userTaskInfo.task_type == TASK_TYPE_SELECT_TRANSLATION) {
-                const task = await getSelectTranslationTask(user_id, text_id);
+
+
+            }*/ else if (userTaskInfo.task_type == TASK_TYPE_SELECT_TRANSLATION) {
+                task = await getSelectTranslationTask(user_id, text_id);
 
                 if (!task)
-                    return res.status(404).json({ msg: 'Invalid task' });
+                    return res.status(404).json(req.msg.json.INVALID_TASK);
 
                 const selection = req.body.selection;
                 if (typeof selection != 'number' || (selection < -1 || selection > 1))
-                    return res.status(404).json({ msg: 'Invalid selection' });
+                    return res.status(404).json(req.msg.json.INVALID_SELECTION);
 
                 commitResult = commitTranslationSelection(res, task.original.id, task.suggestion.id, selection);
             } else {
-                return res.status(500).json({ msg: 'Invalid task' });
+                return res.status(500).json(req.msg.json.INVALID_TASK);
             }
 
             if (commitResult) {
-                onUserCompleteTask(res, user_id, userTaskInfo.task_type)
+                onUserCompleteTask(res, user_id, userTaskInfo.task_type, task?.original_text)
             }
         } catch (e) {
             console.log(e);
-            res.status(500).json(SERVER_ERROR_MSG);
+            res.status(500).json(req.msg.json.SERVER_ERROR);
         }
     }
 }

@@ -61,6 +61,16 @@ body {
                                     supported by Chrome, Edge, Opera and Firefox */
 }
 
-#root {
-    transition: all 1s ease;
+table, tr, td, th {
+    border: 1px solid #000;
+}
+
+td {
+    padding: 5px;
+}
+
+.reward_text {
+    color: #055e057e;
+    font-weight: 500;
+    font-size: 20px;
 }

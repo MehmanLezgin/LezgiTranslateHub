@@ -1,5 +1,6 @@
 import React from 'react'
 import Translation from './Translation'
+import Username from './Username';
 
 export default function RateTranslation({ index, mark, isSingle, translationItem, textChangeCallback, suggChangeCallback, removeCallback, rateCallback, dialectCallback }) {
     const { id, translator_username, rating, rates_count, can_suggest } = translationItem;
@@ -54,7 +55,7 @@ export default function RateTranslation({ index, mark, isSingle, translationItem
                 <option value="4">4</option>
                 <option value="5">5</option>
             </select>
-            <p>Рейтинг: {rating}, Оценок: {rates_count > 0 ? rates_count : 'Нет'}, Перевёл: <a href={'user/profile/' + translator_username}>@{translator_username}</a></p>
+            <p>Рейтинг: {rating}, Оценок: {rates_count > 0 ? rates_count : 'Нет'}, Перевёл: <Username username={translator_username} /> </p>
         </div>
     )
 }

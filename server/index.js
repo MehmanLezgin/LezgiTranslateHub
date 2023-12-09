@@ -4,7 +4,8 @@ const cors = require('cors');
 require('dotenv').config();
 
 const taskRouters = require('./routers/taskRouter')
-const userRouters = require('./routers/userRouter')
+const userRouters = require('./routers/userRouter');
+const langMiddleware = require('./middlewares/langMiddleware');
 
 const PORT = process.env.PORT || 3000;
 
@@ -12,14 +13,16 @@ const app = express();
 
 
 app.use(cors());
-
 app.use(express.json());
+app.use(langMiddleware);
+
 app.use((err, req, res, next) => {
     if (err instanceof SyntaxError && 'body' in err) {
         return res.status(400).json({ msg: 'Invalid JSON' });
     }
     next(err);
 });
+
 app.use('/api/task', taskRouters)
 app.use('/api/user', userRouters)
 
