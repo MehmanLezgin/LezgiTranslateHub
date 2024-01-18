@@ -8,9 +8,7 @@ const userRouters = require('./routers/userRouter');
 const langMiddleware = require('./middlewares/langMiddleware');
 
 const PORT = process.env.PORT || 3000;
-
 const app = express();
-
 
 app.use(cors());
 app.use(express.json());
@@ -25,10 +23,6 @@ app.use((err, req, res, next) => {
 
 app.use('/api/task', taskRouters)
 app.use('/api/user', userRouters)
-
-app.use('/api/test', (req, res) => {
-    res.status(200).json({ msg: 'Hello World!' });
-})
 
 app.use((req, res) => {
     res.status(404).json({ msg: 'Not Found' });

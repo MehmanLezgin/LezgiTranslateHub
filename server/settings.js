@@ -19,7 +19,9 @@ const settings = {
     USER_STATS_TR_PER_PAGE: 20,
 
     MIN_CORRECT_TR_RATING:  4.1,
-    MIN_CORRECT_TR_RATES_COUNT: 5
+    MIN_INCORRECT_TR_RATING:  2.0,
+    MIN_CORRECT_TR_RATES_COUNT: 5,
+    MIN_INCORRECT_TR_RATES_COUNT: 5
 };
 
 module.exports = settings;

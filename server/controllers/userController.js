@@ -115,7 +115,7 @@ class UserController {
             const result = await db.query(query, [username ? username : email]);
             
             const userData = result.rows[0];
-            console.log(userData);
+            
             if (!userData) {
                 return res.status(400).json(req.msg.json.WRONG_LOGIN_PASSWORD);
             }
